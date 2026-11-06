@@ -1,7 +1,7 @@
 // The generated go2rtc config is what every consumer ends up pulling, so its source line carries the
 // flags that decide whether a stream is usable. `#async` re-stamps frames from the wall clock: without
 // it the eufy feed's own timestamps (dts 0, then a jump) make Home Assistant abort a picture that is
-// already flowing — "Timestamp discontinuity detected: last dts = 0, dts = 4219155056".
+// already flowing â€” "Timestamp discontinuity detected: last dts = 0, dts = 4219155056".
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -16,8 +16,42 @@ import { createWsServer } from "../src/ws-server.mjs";
 
 const cams = [
   { sn: "CAM1", stream: "/stream/CAM1" },
-  { sn: "SENSOR1" }, // no stream path → not a camera, must not appear
+  { sn: "CAM2", stream: "/stream/CAM2" },
+  { sn: "SENSOR1" }, // no stream path â†’ not a camera, must not appear
 ];
+
+test("configured H.264 conversion reaches both advertised S4 optical sources", async () => {
+  const devices = [
+    {
+      sn: "CAMERA_S4",
+      model: "T8E00",
+      name: "Driveway PoE S4",
+      deviceClass: "other",
+      stream: "/stream/CAMERA_S4",
+      views: [
+        { view: 0, id: "CAMERA_S4", stream: "/stream/CAMERA_S4", snapshot: "/snapshot/CAMERA_S4" },
+        { view: 1, id: "CAMERA_S4_view_1", stream: "/stream/CAMERA_S4?view=1", snapshot: "/snapshot/CAMERA_S4?view=1" },
+      ],
+    },
+    { sn: "CAMERA_E40", model: "T8P00", name: "PoE E40", stream: "/stream/CAMERA_E40" },
+  ];
+  const { cfg } = loadConfig({
+    EUFY_EMAIL: "example@example.invalid",
+    EUFY_PASSWORD: "test",
+    TRANSCODE_H264: "CAMERA_S4",
+    TRANSCODE_WIDTH: "1920",
+  });
+  const { yaml } = await generate(cfg, devices);
+  assert.ok(
+    yaml.includes("CAMERA_S4: ffmpeg:http://127.0.0.1:3000/stream/CAMERA_S4#video=h264#width=1920#height=-2#async"),
+  );
+  assert.ok(
+    yaml.includes(
+      "CAMERA_S4_view_1: ffmpeg:http://127.0.0.1:3000/stream/CAMERA_S4?view=1#video=h264#width=1920#height=-2#async",
+    ),
+  );
+  assert.ok(yaml.includes("CAMERA_E40: ffmpeg:http://127.0.0.1:3000/stream/CAMERA_E40#video=copy#async"));
+});
 
 async function generate(extra = {}, devices = cams) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "go2rtc-"));
@@ -28,8 +62,21 @@ async function generate(extra = {}, devices = cams) {
 
 test("every camera stream is generated with #async", async () => {
   const { yaml, sns } = await generate();
-  assert.deepEqual(sns, ["CAM1"]);
+  assert.deepEqual(sns, ["CAM1", "CAM2"]);
   assert.match(yaml, /CAM1: ffmpeg:http:\/\/127\.0\.0\.1:3000\/stream\/CAM1#video=copy#async/);
+});
+
+// An H.265 camera plays nowhere that lacks an H.265 decoder (a Pi's Chromium, WebRTC in desktop Chrome),
+// so a listed camera is converted to H.264, scaled, with an even height; the rest are still copied.
+test("a camera listed for transcoding is converted to H.264 at the set width", async () => {
+  const { yaml } = await generate({ transcodeH264: ["CAM2"], transcodeWidth: 1280 });
+  assert.match(yaml, /CAM2: ffmpeg:http:\/\/127\.0\.0\.1:3000\/stream\/CAM2#video=h264#width=1280#height=-2#async/);
+  assert.match(yaml, /CAM1: ffmpeg:http:\/\/127\.0\.0\.1:3000\/stream\/CAM1#video=copy#async/);
+});
+
+test("a camera listed for transcoding keeps its own size when no width is set", async () => {
+  const { yaml } = await generate({ transcodeH264: ["CAM2"] });
+  assert.match(yaml, /CAM2: ffmpeg:http:\/\/127\.0\.0\.1:3000\/stream\/CAM2#video=h264#async/);
 });
 
 test("a device without a stream path is left out", async () => {

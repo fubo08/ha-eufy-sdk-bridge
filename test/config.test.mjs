@@ -6,10 +6,26 @@ import { prewarmEventsFor, PREWARM_EVENTS } from "../src/client.mjs";
 const base = { EUFY_EMAIL: "x@y.z", EUFY_PASSWORD: "pw" };
 
 test("event pre-warm is OFF by default", () => {
-  assert.equal(loadConfig(base).cfg.prewarm, false); // → client passes prewarmEvents: []
+  assert.equal(loadConfig(base).cfg.prewarm, false); // â†’ client passes prewarmEvents: []
   assert.equal(loadConfig(base).cfg.localEventRefresh, true); // default on
   assert.equal(loadConfig({ ...base, EUFY_LOCAL_EVENT_REFRESH: "0" }).cfg.localEventRefresh, false);
   assert.equal(loadConfig({ ...base, EUFY_LOCAL_EVENT_REFRESH: "off" }).cfg.localEventRefresh, false);
+});
+
+test("TRANSCODE_H264: empty by default, a comma- or space-separated list of serials otherwise", () => {
+  assert.deepEqual(loadConfig(base).cfg.transcodeH264, []);
+  assert.deepEqual(loadConfig({ ...base, TRANSCODE_H264: "T8170A, T8170B T8210C" }).cfg.transcodeH264, [
+    "T8170A",
+    "T8170B",
+    "T8210C",
+  ]);
+});
+
+test("TRANSCODE_WIDTH: 1280 by default, a custom width honoured, anything else keeps the camera's size", () => {
+  assert.equal(loadConfig(base).cfg.transcodeWidth, 1280);
+  assert.equal(loadConfig({ ...base, TRANSCODE_WIDTH: "1920" }).cfg.transcodeWidth, 1920);
+  assert.equal(loadConfig({ ...base, TRANSCODE_WIDTH: "0" }).cfg.transcodeWidth, undefined);
+  assert.equal(loadConfig({ ...base, TRANSCODE_WIDTH: "wide" }).cfg.transcodeWidth, undefined);
 });
 
 test("BRIDGE_PREWARM=1 turns pre-warm on", () => {
@@ -64,15 +80,15 @@ test("go2rtc ports: 1984/8554/8555 by default, GO2RTC_*_PORT moves each", () => 
     GO2RTC_WEBRTC_PORT: "18555",
   }).cfg;
   assert.deepEqual([moved.go2rtcApiPort, moved.go2rtcRtspPort, moved.go2rtcWebrtcPort], [11984, 18554, 18555]);
-  // Not a port → the default, never NaN in the YAML or the URL.
+  // Not a port â†’ the default, never NaN in the YAML or the URL.
   assert.equal(loadConfig({ ...base, GO2RTC_RTSP_PORT: "" }).cfg.go2rtcRtspPort, 8554);
   assert.equal(loadConfig({ ...base, GO2RTC_RTSP_PORT: "rtsp" }).cfg.go2rtcRtspPort, 8554);
 });
 
 test("openudid is undefined by default and taken from BRIDGE_OPENUDID when set", () => {
-  assert.equal(loadConfig(base).cfg.openudid, undefined); // → SDK derives from email
+  assert.equal(loadConfig(base).cfg.openudid, undefined); // â†’ SDK derives from email
   assert.equal(loadConfig({ ...base, BRIDGE_OPENUDID: "abcd1234abcd1234" }).cfg.openudid, "abcd1234abcd1234");
-  assert.equal(loadConfig({ ...base, BRIDGE_OPENUDID: "" }).cfg.openudid, undefined); // empty → default
+  assert.equal(loadConfig({ ...base, BRIDGE_OPENUDID: "" }).cfg.openudid, undefined); // empty â†’ default
 });
 
 test("STREAM_BATTERY_MAX_MS: a malformed value keeps the safety cap, 0 removes it", () => {
