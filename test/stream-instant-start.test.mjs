@@ -31,6 +31,61 @@ const KEYFRAME = Buffer.from([
   0, 0, 0, 1, 0x67, 0x42, 0, 0x1e, 0, 0, 0, 1, 0x68, 0xce, 0x38, 0x80, 0, 0, 0, 1, 0x65, 0x88,
 ]);
 
+test("an advertised secondary view is primed from its own kept keyframe while its live feed waits", async () => {
+  const t = await setup({ views: [0, 1] });
+  let release;
+  try {
+    const secondary = Buffer.from(KEYFRAME);
+    secondary[secondary.length - 1] = 0x99;
+    fs.writeFileSync(lastLiveKeyframeFile(t.dir, "CAM1_view_1"), secondary);
+    t.gate = new Promise((r) => (release = r));
+    const p = pull(t, "?view=1");
+    await until(() => p.bytes().length >= secondary.length, "secondary primer before live frames");
+    assert.equal(p.status, 200);
+    assert.deepEqual(p.bytes().subarray(0, secondary.length), secondary);
+    release();
+    await until(() => t.feeds.length === 1, "secondary live feed");
+    t.feeds[0].end(Buffer.from("live"));
+    await p.done;
+  } finally {
+    release?.();
+    await t.close();
+  }
+});
+
+test("a stale secondary keyframe cannot prime a view the current SDK does not advertise", async () => {
+  const t = await setup();
+  try {
+    fs.writeFileSync(lastLiveKeyframeFile(t.dir, "CAM1_view_1"), KEYFRAME);
+    const p = pull(t, "?view=1");
+    const out = await p.done;
+    assert.equal(out.status, 404);
+    assert.equal(t.opens, 0);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a secondary view without its own keyframe never receives the primary picture", async () => {
+  const t = await setup({ views: [0, 1], env: { STREAM_PLACEHOLDER: "1" } });
+  let release;
+  try {
+    t.gate = new Promise((r) => (release = r));
+    const p = pull(t, "?view=1");
+    await until(() => t.opens === 1, "secondary live open waiting");
+    assert.equal(p.bytes().length, 0);
+    assert.equal(p.status, undefined);
+    release();
+    await until(() => t.feeds.length === 1, "secondary feed opened");
+    t.feeds[0].end(Buffer.from("live"));
+    const out = await p.done;
+    assert.deepEqual(out.bytes(), Buffer.from("live"));
+  } finally {
+    release?.();
+    await t.close();
+  }
+});
+
 async function until(cond, what) {
   for (let i = 0; i < 300; i++) {
     if (cond()) return;
@@ -43,7 +98,7 @@ async function until(cond, what) {
  * A bridge HTTP server over fake cameras. Each open takes the next entry of `t.plan` ("fail" or "feed";
  * default "feed") and waits on `t.gate` when set. `env` extends the bridge environment.
  */
-async function setup({ env = {}, keyframe = true } = {}) {
+async function setup({ env = {}, keyframe = true, views = [0] } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "instant-start-"));
   if (keyframe) fs.writeFileSync(lastLiveKeyframeFile(dir, "CAM1"), KEYFRAME);
   const config = loadConfig({
@@ -66,12 +121,14 @@ async function setup({ env = {}, keyframe = true } = {}) {
     noteStreamOpened: () => {},
     noteStreamFailure: (sn) => void t.failures.push(sn),
     streamBackoffMs: () => 0,
+    eufy: { getDevice: async () => ({ camera: () => ({ views: () => views }) }) },
     dropStreamClient: (sn) => void t.dropped.push(sn),
     streamClientFor: async () => {
       t.clients++;
       return {
         getDevice: async () => ({
           camera: () => ({
+            views: () => views,
             openReadable: async () => {
               const step = t.plan[t.opens++] ?? "feed";
               if (step === "error") throw new Error("cloud said no");
@@ -99,10 +156,10 @@ async function setup({ env = {}, keyframe = true } = {}) {
 }
 
 /** Open /stream/CAM1 and collect every byte; `done` settles with how the response ended. */
-function pull(t) {
+function pull(t, query = "") {
   const out = { chunks: [], ended: false, aborted: false };
   out.bytes = () => Buffer.concat(out.chunks);
-  out.req = http.get({ host: "127.0.0.1", port: t.port, path: "/stream/CAM1" });
+  out.req = http.get({ host: "127.0.0.1", port: t.port, path: `/stream/CAM1${query}` });
   out.done = new Promise((resolve) => {
     out.req.on("response", (res) => {
       out.status = res.statusCode;

@@ -421,11 +421,18 @@ export function createHttpHandler(ctx) {
       // the consumer's RTSP DESCRIBE does not time out while the camera wakes (see stream-primer.mjs).
       // A camera never watched here has no kept keyframe: it starts with the stand-in picture instead. Only
       // where live keyframes are kept — an H.265 camera recovers from the H.264 stand-in through that file.
-      // Only the primary view: whether a secondary one exists is known once the camera answers, and that
-      // answer must stay a 404 rather than a primed response.
-      const instant = cfg.streamInstantStart && view === 0;
-      let primer = instant ? await loadPrimer(eventImageDir, sn) : null;
-      if (!primer && instant && cfg.streamPlaceholder && eventImageDir)
+      // A secondary view may reuse only its own keyframe, and only while the control client's current
+      // SDK inventory still advertises it. An obsolete file must not turn an unsupported view into 200.
+      let instant = cfg.streamInstantStart;
+      if (instant && view !== 0) {
+        try {
+          instant = cameraViews((await eufy.getDevice(sn)).camera?.()).includes(view);
+        } catch {
+          instant = false; // retain the normal validated open when inventory is unavailable
+        }
+      }
+      let primer = instant ? await loadPrimer(eventImageDir, source.id) : null;
+      if (!primer && instant && view === 0 && cfg.streamPlaceholder && eventImageDir)
         primer = { au: PLACEHOLDER_KEYFRAME, codec: PLACEHOLDER_CODEC, placeholder: true };
       let stopPrimer;
       if (primer && !gone) {
