@@ -416,7 +416,11 @@ export function createHttpHandler(ctx) {
       // that from the start: a feed opened for nobody would hold the camera's live source open and report
       // it as streaming until the idle timeout.
       let gone = false;
-      const onGone = () => (gone = true);
+      const audioAbort = kind === "audio" ? new AbortController() : null;
+      const onGone = () => {
+        gone = true;
+        audioAbort?.abort();
+      };
       res.once("close", onGone);
       // Instant start: answer now with the last live keyframe, repeated until the live feed takes over, so
       // the consumer's RTSP DESCRIBE does not time out while the camera wakes (see stream-primer.mjs).
@@ -473,7 +477,7 @@ export function createHttpHandler(ctx) {
           const cam = dev.camera?.();
           const openFeed =
             kind === "audio"
-              ? cam?.live && (async (opts) => openAdts(await cam.live(opts)))
+              ? cam?.live && (async (opts) => openAdts(await cam.live(opts), { signal: audioAbort.signal }))
               : liveFeedOpener(
                   cam,
                   battery ? { onBudget: (notice) => void onStreamBudget(sn, notice, res) } : undefined,
@@ -565,6 +569,7 @@ export function createHttpHandler(ctx) {
           return;
         } catch (e) {
           feed?.destroy();
+          if (audioAbort?.signal.aborted && e === audioAbort.signal.reason) return;
           if (isNoLiveAudio(e)) return fail(404, { error: e.message });
           // Our client was dropped (or the bridge is shutting down) before its login finished: nothing was
           // opened and the camera did not fail, so neither arm the backoff nor drop the client that replaced it.

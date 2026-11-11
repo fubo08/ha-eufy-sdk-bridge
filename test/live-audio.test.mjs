@@ -90,3 +90,21 @@ test("destroying the Readable stops the consumer, which releases the shared pull
   await new Promise((r) => setImmediate(r));
   assert.equal(h.stops, 1);
 });
+
+test("aborting before the first audio frame immediately releases the consumer", async () => {
+  const h = fakeHandle();
+  const controller = new AbortController();
+  const opening = openAdts(h, { signal: controller.signal, timeoutMs: 50 });
+  controller.abort();
+  await assert.rejects(opening, { name: "AbortError" });
+  assert.equal(h.stops, 1);
+  assert.equal(h.listenerCount("audio"), 0);
+  assert.equal(h.listenerCount("error"), 0);
+});
+
+test("an already aborted request releases the supplied consumer without subscribing", async () => {
+  const h = fakeHandle();
+  await assert.rejects(openAdts(h, { signal: AbortSignal.abort(), timeoutMs: 50 }), { name: "AbortError" });
+  assert.equal(h.stops, 1);
+  assert.equal(h.listenerCount("audio"), 0);
+});

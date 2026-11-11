@@ -29,13 +29,18 @@ export const isNoLiveAudio = (e) => e?.code === NO_LIVE_AUDIO;
  * another, and its ADTS reader blocks until it sees a header, so an /audio left open without bytes holds
  * every viewer's DESCRIBE — video too — while a 404 lets go2rtc carry on with video alone.
  *
- * Destroying the Readable stops the consumer, which releases the shared pull.
+ * Destroying the Readable stops the consumer, which releases the shared pull. A request's AbortSignal
+ * also releases a consumer still waiting for its first frame, without waiting for the audio timeout.
  */
-export function openAdts(handle, { quietMs = 3000, timeoutMs = 20000 } = {}) {
+export function openAdts(handle, { quietMs = 3000, timeoutMs = 20000, signal } = {}) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let quiet;
+    let overall;
+    let stopped = false;
     const stop = () => {
+      if (stopped) return;
+      stopped = true;
       try {
         handle.stop();
       } catch {
@@ -45,6 +50,7 @@ export function openAdts(handle, { quietMs = 3000, timeoutMs = 20000 } = {}) {
     const out = new Readable({
       read() {}, // ~3 KB/s: nothing for backpressure to save, and pausing would hold the shared source's queue
       destroy(err, cb) {
+        detach();
         stop();
         cb(err);
       },
@@ -58,16 +64,15 @@ export function openAdts(handle, { quietMs = 3000, timeoutMs = 20000 } = {}) {
     const fail = (err) => {
       if (settled) return;
       settle();
-      stop();
+      out.destroy();
       reject(err);
     };
     const giveUp = (why) => fail(Object.assign(new Error(`no live audio: ${why}`), { code: NO_LIVE_AUDIO }));
-    const overall = setTimeout(() => giveUp(`nothing arrived within ${timeoutMs} ms`), timeoutMs);
+    overall = setTimeout(() => giveUp(`nothing arrived within ${timeoutMs} ms`), timeoutMs);
     function onVideo() {
       quiet ??= setTimeout(() => giveUp(`video arrived, but no audio within ${quietMs} ms`), quietMs);
     }
-    handle.on("video", onVideo);
-    handle.on("audio", (frame) => {
+    function onAudio(frame) {
       if (frame.codec !== "aac-lc") {
         // Before the response starts this decides it; afterwards a frame we can't serve is skipped.
         giveUp(`the camera sends ${frame.codec}; only ADTS-framed aac-lc is served`);
@@ -77,12 +82,34 @@ export function openAdts(handle, { quietMs = 3000, timeoutMs = 20000 } = {}) {
       if (settled) return;
       settle();
       resolve(out);
-    });
+    }
     // Upstream ended: EOF once the response is under way, "no audio" before it.
-    handle.on("stop", () => (settled ? out.push(null) : giveUp("the stream stopped before any audio")));
-    handle.on("error", (err) => {
+    function onStop() {
+      if (settled) out.push(null);
+      else giveUp("the stream stopped before any audio");
+    }
+    function onError(err) {
       if (settled) out.destroy(err);
       else fail(err);
-    });
+    }
+    function onAbort() {
+      if (settled) out.destroy();
+      else fail(signal.reason ?? new DOMException("Audio request cancelled", "AbortError"));
+    }
+    function detach() {
+      clearTimeout(overall);
+      clearTimeout(quiet);
+      handle.off("video", onVideo);
+      handle.off("audio", onAudio);
+      handle.off("stop", onStop);
+      handle.off("error", onError);
+      signal?.removeEventListener("abort", onAbort);
+    }
+    handle.on("video", onVideo);
+    handle.on("audio", onAudio);
+    handle.on("stop", onStop);
+    handle.on("error", onError);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
   });
 }

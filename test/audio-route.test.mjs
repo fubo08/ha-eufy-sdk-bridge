@@ -179,3 +179,18 @@ test("an unadvertised audio view stays a 404 without opening live media", async 
     await t.close();
   }
 });
+
+test("leaving before the first audio frame releases the pending consumer without failing the camera", async () => {
+  const t = await setup();
+  try {
+    const p = pull(t);
+    await until(() => t.handles.length === 1, "pending audio consumer attached");
+    p.req.destroy();
+    await until(() => t.handles[0].stops === 1, "pending audio consumer released");
+    assert.deepEqual(t.failures, []);
+    assert.deepEqual(t.dropped, []);
+    assert.equal(t.state.streaming.has("CAM1"), false);
+  } finally {
+    await t.close();
+  }
+});
