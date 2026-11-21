@@ -172,7 +172,7 @@ test("Full HD flows through advertised sources, HTTP and go2rtc without replacin
         `  ${source.id}:\n` +
           `    - ffmpeg:http://127.0.0.1:3000${source.stream}#video=copy#async\n` +
           `    - http://127.0.0.1:3000${audioPath}\n` +
-          `    - ffmpeg:${source.id}#audio=opus#raw=-af asetpts=N/SR/TB`,
+          `    - ffmpeg:${source.id}#audio=opus#raw=eufy_audio_timestamps`,
       ),
       `matching video, audio and Opus sources for ${source.id}`,
     );
